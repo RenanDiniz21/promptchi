@@ -100,6 +100,12 @@ mod tests {
     }
 
     #[test]
+    fn content_array_misto_com_tool_result_e_ignorado() {
+        let l = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"corrige isso"},{"type":"tool_result","content":"ok"}]},"timestamp":"2026-07-15T13:00:00.000Z"}"#;
+        assert!(a().parse_line(l, "s1").is_none());
+    }
+
+    #[test]
     fn sidechain_e_ignorado() {
         let l = r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"do subagente"},"timestamp":"2026-07-15T13:00:00.000Z"}"#;
         assert!(a().parse_line(l, "s1").is_none());
