@@ -1,6 +1,5 @@
 pub mod claude_code;
-// `pub mod codex;` é adicionado na Task 6 — declarar aqui antes do arquivo
-// existir quebra a compilação desta task.
+pub mod codex;
 
 use crate::types::{PromptEvent, Provider};
 
