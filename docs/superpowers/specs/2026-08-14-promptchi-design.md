@@ -100,10 +100,30 @@ Código específico de SO fica atrás de duas interfaces (`IFileWatcher`, janela
 
 | Provider | Caminho | Registro relevante |
 |---|---|---|
-| Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl` | `type:"queue-operation"`, `operation:"enqueue"` — texto literal digitado pelo humano |
-| Codex | `~/.codex/sessions/<ano>/…`, `~/.codex/archived_sessions/rollout-*.jsonl` | regra equivalente a definir com amostra real em M1 |
+| Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl` | `type:"user"` + `message.role:"user"` |
+| Codex | `~/.codex/sessions/<ano>/…`, `~/.codex/archived_sessions/rollout-*.jsonl` | `type:"event_msg"` + `payload.type:"user_message"` → `payload.message` |
 
-O registro `queue-operation` do Claude Code resolve na origem a separação entre mensagem humana e `tool_result` injetado pelo sistema.
+**Regra de discriminação — Claude Code.** O tipo `user` cobre tanto o prompt humano quanto `tool_result` injetado pelo sistema. Discriminador confirmado em amostra real (10 humanos : 93 injetados num único arquivo):
+
+```
+aceitar se:
+  type == "user"
+  && message.role == "user"
+  && isSidechain != true          -- conversa de subagente
+  && isMeta != true               -- mensagem meta
+  && (
+       content é string           -- prompt humano digitado
+       ||
+       content é array sem nenhum bloco tool_result,
+       com pelo menos um bloco text não vazio
+     )
+  && texto não é marcador de sistema conhecido
+     (ex.: "[Request interrupted by user]")
+```
+
+**Regra — Codex.** Direta, sem ambiguidade: `type == "event_msg"` e `payload.type == "user_message"`, texto em `payload.message`.
+
+Nota histórica: uma versão anterior deste spec apontava `type:"queue-operation"` como fonte primária do Claude Code. Incorreto — esse registro aparece em arquivos sidecar de metadados, não nos transcripts de conversa, e não é confiável como fonte única.
 
 ### 5.2 Mecânica
 
