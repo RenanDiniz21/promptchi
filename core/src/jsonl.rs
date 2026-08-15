@@ -70,6 +70,15 @@ mod tests {
     }
 
     #[test]
+    fn utf8_multibyte_atravessando_dois_pushes() {
+        // A fronteira entre os chunks cai imediatamente antes e depois de
+        // caracteres multibyte, e a linha só termina no segundo `push`.
+        let mut b = LineBuffer::new();
+        assert_eq!(b.push("preço da manutenç"), Vec::<String>::new());
+        assert_eq!(b.push("ão é alto\n"), vec!["preço da manutenção é alto".to_string()]);
+    }
+
+    #[test]
     fn clear_descarta_pendente() {
         let mut b = LineBuffer::new();
         b.push("parcial");

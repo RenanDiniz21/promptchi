@@ -15,11 +15,32 @@ pub struct FileCursor {
     offset: u64,
     buffer: LineBuffer,
     prefixo: Vec<u8>,
+    /// Bytes lidos que ainda não formam UTF-8 válido. Uma leitura pode
+    /// terminar no meio de uma sequência multibyte (o corpus é em português,
+    /// onde isso é frequente); esses bytes ficam retidos aqui até o restante
+    /// da sequência chegar na leitura seguinte. Converter com perdas neste
+    /// ponto destruiria o caractere e, por tabela, a linha inteira.
+    cauda: Vec<u8>,
 }
 
 impl FileCursor {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, offset: 0, buffer: LineBuffer::new(), prefixo: Vec::new() }
+        Self {
+            path,
+            offset: 0,
+            buffer: LineBuffer::new(),
+            prefixo: Vec::new(),
+            cauda: Vec::new(),
+        }
+    }
+
+    /// Descarta todo estado de leitura parcial. Usado quando o arquivo foi
+    /// truncado ou substituído: o que estava retido pertence ao conteúdo
+    /// antigo e não pode ser colado no novo.
+    fn reiniciar(&mut self) {
+        self.offset = 0;
+        self.buffer.clear();
+        self.cauda.clear();
     }
 
     pub fn offset(&self) -> u64 {
@@ -70,8 +91,7 @@ impl FileCursor {
         ou_vazio!((&mut f).take(TAMANHO_PREFIXO as u64).read_to_end(&mut atual));
         let n = self.prefixo.len().min(atual.len());
         if self.prefixo[..n] != atual[..n] {
-            self.offset = 0;
-            self.buffer.clear();
+            self.reiniciar();
         }
         self.prefixo = atual;
 
@@ -79,8 +99,7 @@ impl FileCursor {
 
         // Arquivo encolheu: foi truncado. Recomeçar.
         if tamanho < self.offset {
-            self.offset = 0;
-            self.buffer.clear();
+            self.reiniciar();
         }
         if tamanho == self.offset {
             return Ok(Vec::new());
@@ -91,9 +110,56 @@ impl FileCursor {
         let lidos = ou_vazio!(f.read_to_end(&mut bytes)) as u64;
         self.offset += lidos;
 
-        // Bytes inválidos não devem derrubar a captura.
-        let texto = String::from_utf8_lossy(&bytes);
-        Ok(self.buffer.push(&texto))
+        Ok(self.decodificar(&bytes))
+    }
+
+    /// Concatena os bytes novos à cauda retida e entrega ao `LineBuffer` a
+    /// maior porção que já é UTF-8 válido, retendo o resto.
+    ///
+    /// `Utf8Error` distingue os dois motivos de parada:
+    /// - `error_len() == None`: sequência multibyte incompleta no fim do
+    ///   pedaço lido. Os bytes ficam retidos para a próxima leitura.
+    /// - `error_len() == Some(n)`: bytes genuinamente inválidos. São pulados,
+    ///   porque retê-los travaria o cursor para sempre — a decodificação
+    ///   nunca avançaria e todo o arquivo dali em diante seria perdido.
+    fn decodificar(&mut self, bytes: &[u8]) -> Vec<String> {
+        let mut pendente = std::mem::take(&mut self.cauda);
+        pendente.extend_from_slice(bytes);
+
+        let mut saida = Vec::new();
+        let mut inicio = 0usize;
+        loop {
+            match std::str::from_utf8(&pendente[inicio..]) {
+                Ok(texto) => {
+                    saida.extend(self.buffer.push(texto));
+                    inicio = pendente.len();
+                    break;
+                }
+                Err(e) => {
+                    let ate = e.valid_up_to();
+                    if ate > 0 {
+                        // Já validado por `valid_up_to`; o `if let` evita
+                        // qualquer possibilidade de panic mesmo assim.
+                        if let Ok(texto) = std::str::from_utf8(&pendente[inicio..inicio + ate]) {
+                            saida.extend(self.buffer.push(texto));
+                        }
+                    }
+                    match e.error_len() {
+                        None => {
+                            inicio += ate;
+                            break;
+                        }
+                        Some(ruins) => {
+                            inicio += ate + ruins;
+                        }
+                    }
+                }
+            }
+        }
+
+        pendente.drain(..inicio);
+        self.cauda = pendente;
+        saida
     }
 }
 
@@ -104,8 +170,12 @@ mod tests {
     use std::io::Write;
 
     fn escrever(path: &std::path::Path, conteudo: &str) {
+        escrever_bytes(path, conteudo.as_bytes());
+    }
+
+    fn escrever_bytes(path: &std::path::Path, conteudo: &[u8]) {
         let mut f = OpenOptions::new().create(true).append(true).open(path).unwrap();
-        f.write_all(conteudo.as_bytes()).unwrap();
+        f.write_all(conteudo).unwrap();
         f.flush().unwrap();
     }
 
@@ -181,6 +251,68 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut c = FileCursor::new(dir.path().join("nao_existe.jsonl"));
         assert_eq!(c.read_new().unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn multibyte_partido_entre_duas_leituras_chega_integro() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+
+        // "não" em UTF-8: o 'ã' são dois bytes (0xC3 0xA3). A primeira
+        // leitura termina exatamente no meio dele.
+        let linha = "{\"m\":\"não é açaí\"}\n";
+        let bytes = linha.as_bytes();
+        let corte = linha.find('ã').unwrap() + 1; // metade do 'ã'
+        escrever_bytes(&p, &bytes[..corte]);
+
+        let mut c = FileCursor::new(p.clone());
+        assert_eq!(
+            c.read_new().unwrap(),
+            Vec::<String>::new(),
+            "linha incompleta não pode ser emitida"
+        );
+
+        escrever_bytes(&p, &bytes[corte..]);
+        assert_eq!(
+            c.read_new().unwrap(),
+            vec!["{\"m\":\"não é açaí\"}".to_string()],
+            "o caractere partido entre leituras precisa chegar íntegro"
+        );
+    }
+
+    #[test]
+    fn multibyte_partido_nao_contamina_a_linha_seguinte() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+
+        let a = "olá\n";
+        let corte = a.find('á').unwrap() + 1;
+        escrever_bytes(&p, &a.as_bytes()[..corte]);
+
+        let mut c = FileCursor::new(p.clone());
+        assert_eq!(c.read_new().unwrap(), Vec::<String>::new());
+
+        escrever_bytes(&p, &a.as_bytes()[corte..]);
+        escrever_bytes(&p, "segunda\n".as_bytes());
+        assert_eq!(
+            c.read_new().unwrap(),
+            vec!["olá".to_string(), "segunda".to_string()]
+        );
+    }
+
+    #[test]
+    fn bytes_invalidos_nao_travam_o_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+
+        // 0xFF nunca é válido em UTF-8: `error_len()` devolve `Some`, e os
+        // bytes ruins precisam ser pulados para a leitura seguir.
+        escrever_bytes(&p, &[0xFF, 0xFE]);
+        let mut c = FileCursor::new(p.clone());
+        assert_eq!(c.read_new().unwrap(), Vec::<String>::new());
+
+        escrever_bytes(&p, "boa\n".as_bytes());
+        assert_eq!(c.read_new().unwrap(), vec!["boa".to_string()]);
     }
 
     #[test]
