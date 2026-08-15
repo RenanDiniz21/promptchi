@@ -1453,6 +1453,34 @@ fn jsonls_em(raiz: &Path) -> Vec<PathBuf> {
 }
 ```
 
+> **Correções aplicadas durante a execução.** O código acima tem três defeitos
+> encontrados na revisão. A implementação em [cli/src/main.rs](../../../cli/src/main.rs)
+> é a fonte de verdade desta task; o bloco acima fica como registro do ponto de
+> partida.
+>
+> **1. Duplicação quando o arquivo é movido.** Cursores indexados por `PathBuf`.
+> O Codex **move** arquivos de `~/.codex/sessions/` para
+> `~/.codex/archived_sessions/` — confirmado empiricamente: 206 arquivos numa
+> raiz, 1 na outra, e o UUID arquivado ausente da primeira. O evento no caminho
+> novo criava cursor do zero e reimprimia a sessão inteira, falhando o critério
+> "zero duplicado" deste próprio milestone. Correção: chave do mapa passa a ser
+> `(Provider, session_id)`, `FileCursor` ganha `set_path` preservando `offset`,
+> `buffer` e `prefixo`, e `Provider` deriva `Hash`. Funciona porque
+> `sessao_do_caminho` deriva o id do nome do arquivo, não do diretório.
+>
+> **2. Raiz ausente no arranque nunca era observada.** `watcher.watch()` só era
+> chamado para raízes existentes, sem nova tentativa — uma pasta criada depois
+> ficava invisível para sempre, sem erro. Correção: raízes faltantes ficam numa
+> lista e são retentadas; ao aparecer, seus cursores são posicionados no fim
+> para não despejar histórico.
+>
+> **3. Sem rede de segurança contra evento perdido.** O laço dependia
+> inteiramente do canal do `notify`, e `ReadDirectoryChangesW` pode coalescer ou
+> perder eventos sob rajada de escrita — prompt sumiria sem log e sem crash.
+> Correção: laço com `recv_timeout`; a cada ociosidade, revarredura das raízes
+> observadas pelo **mesmo** caminho de código dos eventos. Cursores compartilhados
+> tornam a revarredura idempotente.
+
 - [ ] **Step 3: Compilar**
 
 ```bash
