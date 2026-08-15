@@ -3,10 +3,50 @@ use serde_json::Value;
 use crate::adapters::PromptSource;
 use crate::types::{PromptEvent, Provider};
 
-const MARCADORES_DE_SISTEMA: [&str; 2] = [
+/// Textos que o Claude Code grava como se fossem mensagem do usuário mas que
+/// ninguém digitou. Duas famílias, tratadas por `e_injecao_de_sistema`:
+///
+/// 1. `MARCADORES_LITERAIS` — o texto inteiro é o marcador.
+/// 2. `TAGS_DE_SISTEMA` — o texto começa com uma tag de marcação que o
+///    próprio Claude Code injeta. Medição sobre o corpus real (694 linhas
+///    aceitas pelo filtro anterior): 101 injeções, ou 14,6%, distribuídas em
+///    task-notification 54, command-name 15, ide_opened_file 14,
+///    local-command-stdout 10, system-reminder 4, command-message 4.
+///    `local-command-stdout` é a SAÍDA de um slash command, não entrada
+///    digitada.
+///
+/// O casamento é ancorado no início do texto já aparado e restrito a estes
+/// nomes de tag: um humano pode legitimamente colar um trecho começando com
+/// `<`, e rejeitar qualquer marcação angular perderia prompt real.
+const MARCADORES_LITERAIS: [&str; 2] = [
     "[Request interrupted by user]",
     "[Request interrupted by user for tool use]",
 ];
+
+const TAGS_DE_SISTEMA: [&str; 6] = [
+    "task-notification",
+    "command-name",
+    "command-message",
+    "ide_opened_file",
+    "local-command-stdout",
+    "system-reminder",
+];
+
+fn e_injecao_de_sistema(texto: &str) -> bool {
+    let t = texto.trim();
+    if MARCADORES_LITERAIS.contains(&t) {
+        return true;
+    }
+    let Some(resto) = t.strip_prefix('<') else { return false };
+    TAGS_DE_SISTEMA.iter().any(|tag| {
+        resto.strip_prefix(tag).is_some_and(|apos| {
+            // A tag só casa se terminar aqui: `<tag>`, `<tag ...>` ou
+            // `<tag/>`. Sem isso, `<command-namespace>` de um humano cairia
+            // no filtro de `command-name`.
+            apos.starts_with('>') || apos.starts_with('/') || apos.starts_with(char::is_whitespace)
+        })
+    })
+}
 
 pub struct ClaudeCodeAdapter;
 
@@ -34,7 +74,7 @@ impl PromptSource for ClaudeCodeAdapter {
         }
 
         let text = extrair_texto_humano(message.get("content")?)?;
-        if MARCADORES_DE_SISTEMA.contains(&text.as_str()) {
+        if e_injecao_de_sistema(&text) {
             return None;
         }
 
@@ -128,6 +168,56 @@ mod tests {
         let l = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"primeira"},{"type":"text","text":"segunda"}]},"timestamp":"2026-07-15T13:00:00.000Z"}"#;
         let e = a().parse_line(l, "s1").expect("deveria capturar");
         assert_eq!(e.text, "primeira\nsegunda");
+    }
+
+    fn linha_com_texto(texto: &str) -> String {
+        let v = serde_json::json!({
+            "type": "user",
+            "isSidechain": false,
+            "message": { "role": "user", "content": texto },
+            "timestamp": "2026-07-15T13:00:00.000Z"
+        });
+        v.to_string()
+    }
+
+    #[test]
+    fn tags_de_sistema_sao_rejeitadas() {
+        let casos = [
+            "<task-notification>\n<task-id>bapj26cky</task-id>\n</task-notification>",
+            "<command-name>/model</command-name>\n<command-message>model</command-message>",
+            "<command-message>ui-ux-pro-max</command-message>\n<command-name>/ui</command-name>",
+            "<ide_opened_file>The user opened the file c:\\x.json in the IDE</ide_opened_file>",
+            "<local-command-stdout>Set model to claude-sonnet-4-6</local-command-stdout>",
+            "<system-reminder>\nThe user started your suggested background task\n</system-reminder>",
+            // Espaço em branco antes da tag não escapa do filtro.
+            "  \n<task-notification>x</task-notification>",
+            // Tag com atributo continua sendo a mesma tag.
+            "<system-reminder priority=\"high\">x</system-reminder>",
+        ];
+        for c in casos {
+            assert!(
+                a().parse_line(&linha_com_texto(c), "s1").is_none(),
+                "deveria rejeitar injeção: {c}"
+            );
+        }
+    }
+
+    #[test]
+    fn texto_humano_com_marcacao_angular_e_aceito() {
+        let casos = [
+            "<div class=\"card\"><span>Olá</span></div>",
+            "<html>\n<body>teste</body>\n</html>",
+            "<Button onClick={x}>salvar</Button>",
+            // Prefixo parecido, mas não é a tag conhecida.
+            "<command-namespace>o que é isso?</command-namespace>",
+            "<task-notifications-config> revisa isso",
+        ];
+        for c in casos {
+            let e = a()
+                .parse_line(&linha_com_texto(c), "s1")
+                .unwrap_or_else(|| panic!("deveria aceitar texto humano: {c}"));
+            assert_eq!(e.text, c);
+        }
     }
 
     #[test]
