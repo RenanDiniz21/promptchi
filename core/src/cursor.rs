@@ -113,8 +113,31 @@ impl FileCursor {
         Ok(self.decodificar(&bytes))
     }
 
-    /// Concatena os bytes novos à cauda retida e entrega ao `LineBuffer` a
-    /// maior porção que já é UTF-8 válido, retendo o resto.
+    /// Entrega ao `LineBuffer` a maior porção dos bytes lidos que já é UTF-8
+    /// válido, retendo o resto na cauda.
+    ///
+    /// O caso comum — cauda vazia, que é o de toda leitura que não terminou
+    /// no meio de um caractere — valida os bytes lidos no lugar, sem cópia
+    /// nenhuma. Só quando há cauda pendente (no máximo 3 bytes) é que vale
+    /// concatenar. Concatenar sempre dobraria o pico de memória do arranque,
+    /// que é dominado pelo maior arquivo isolado do corpus (124 MB hoje).
+    fn decodificar(&mut self, bytes: &[u8]) -> Vec<String> {
+        if self.cauda.is_empty() {
+            let (saida, retido) = Self::fatiar(&mut self.buffer, bytes);
+            self.cauda.extend_from_slice(&bytes[retido..]);
+            return saida;
+        }
+
+        let mut pendente = std::mem::take(&mut self.cauda);
+        pendente.extend_from_slice(bytes);
+        let (saida, retido) = Self::fatiar(&mut self.buffer, &pendente);
+        pendente.drain(..retido);
+        self.cauda = pendente;
+        saida
+    }
+
+    /// Empurra para `buffer` a maior porção válida de `bytes` e devolve o
+    /// índice a partir do qual os bytes precisam ficar retidos.
     ///
     /// `Utf8Error` distingue os dois motivos de parada:
     /// - `error_len() == None`: sequência multibyte incompleta no fim do
@@ -122,17 +145,14 @@ impl FileCursor {
     /// - `error_len() == Some(n)`: bytes genuinamente inválidos. São pulados,
     ///   porque retê-los travaria o cursor para sempre — a decodificação
     ///   nunca avançaria e todo o arquivo dali em diante seria perdido.
-    fn decodificar(&mut self, bytes: &[u8]) -> Vec<String> {
-        let mut pendente = std::mem::take(&mut self.cauda);
-        pendente.extend_from_slice(bytes);
-
+    fn fatiar(buffer: &mut LineBuffer, bytes: &[u8]) -> (Vec<String>, usize) {
         let mut saida = Vec::new();
         let mut inicio = 0usize;
         loop {
-            match std::str::from_utf8(&pendente[inicio..]) {
+            match std::str::from_utf8(&bytes[inicio..]) {
                 Ok(texto) => {
-                    saida.extend(self.buffer.push(texto));
-                    inicio = pendente.len();
+                    saida.extend(buffer.push(texto));
+                    inicio = bytes.len();
                     break;
                 }
                 Err(e) => {
@@ -140,8 +160,8 @@ impl FileCursor {
                     if ate > 0 {
                         // Já validado por `valid_up_to`; o `if let` evita
                         // qualquer possibilidade de panic mesmo assim.
-                        if let Ok(texto) = std::str::from_utf8(&pendente[inicio..inicio + ate]) {
-                            saida.extend(self.buffer.push(texto));
+                        if let Ok(texto) = std::str::from_utf8(&bytes[inicio..inicio + ate]) {
+                            saida.extend(buffer.push(texto));
                         }
                     }
                     match e.error_len() {
@@ -156,10 +176,7 @@ impl FileCursor {
                 }
             }
         }
-
-        pendente.drain(..inicio);
-        self.cauda = pendente;
-        saida
+        (saida, inicio)
     }
 }
 
