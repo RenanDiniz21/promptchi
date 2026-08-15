@@ -1,0 +1,16 @@
+[package]
+name = "promptchi-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "promptchi-watch"
+path = "src/main.rs"
+
+[dependencies]
+promptchi-core = { path = "../core" }
+notify = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
