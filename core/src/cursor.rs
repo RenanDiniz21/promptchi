@@ -26,6 +26,16 @@ impl FileCursor {
         self.offset
     }
 
+    /// Substitui o caminho observado, preservando `offset`, `buffer` e
+    /// `prefixo`. Usado quando o processo escritor move/renomeia o arquivo
+    /// (ex.: o Codex move sessões de `sessions/` para `archived_sessions/`)
+    /// sem alterar o conteúdo: como a impressão digital do prefixo continua
+    /// batendo, a leitura prossegue de onde parou em vez de reemitir o
+    /// arquivo inteiro sob o caminho novo.
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
     pub fn read_new(&mut self) -> std::io::Result<Vec<String>> {
         // O arquivo pode sumir a qualquer momento nesta função (corrida com
         // o processo escritor apagando/rotacionando o arquivo). Em todos os
@@ -170,6 +180,25 @@ mod tests {
     fn arquivo_inexistente_retorna_vazio_sem_erro() {
         let dir = tempfile::tempdir().unwrap();
         let mut c = FileCursor::new(dir.path().join("nao_existe.jsonl"));
+        assert_eq!(c.read_new().unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn set_path_preserva_estado_e_evita_duplicacao_ao_mover_arquivo() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.jsonl");
+        escrever(&a, "um\n");
+
+        let mut c = FileCursor::new(a.clone());
+        assert_eq!(c.read_new().unwrap(), vec!["um".to_string()]);
+
+        // Simula o Codex movendo o arquivo: mesmo conteúdo, caminho novo.
+        let b = dir.path().join("b.jsonl");
+        std::fs::copy(&a, &b).unwrap();
+        c.set_path(b);
+
+        // Nada é reemitido: offset e prefixo preservados fazem a leitura
+        // prosseguir de onde parou, não recomeçar do zero.
         assert_eq!(c.read_new().unwrap(), Vec::<String>::new());
     }
 }
