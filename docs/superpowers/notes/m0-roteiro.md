@@ -1,5 +1,19 @@
 # M0 — Roteiro de verificação do spike de overlay
 
+> ## ✅ GATE APROVADO — 2026-08-15
+>
+> Verificado na máquina de desenvolvimento (Windows 11). Transparência,
+> always-on-top, animação de sprite e click-through funcionando em conjunto.
+> Grade do spritesheet confirmada sem ajuste — ver
+> [`spritesheet-grid.md`](spritesheet-grid.md).
+>
+> **Consequência:** o design de desktop companion do spec está validado. O
+> Plano B (janela opaca com cantos arredondados) não é necessário, e o
+> mascote pode de fato flutuar sobre o desktop como o produto promete.
+>
+> O roteiro abaixo fica como registro do que foi verificado, e serve para
+> repetir o teste em outra máquina ou outra GPU antes de distribuir.
+
 **Gate eliminatório.** Se a transparência falhar nesta máquina, o design do
 desktop companion muda antes de qualquer UI ser escrita.
 
