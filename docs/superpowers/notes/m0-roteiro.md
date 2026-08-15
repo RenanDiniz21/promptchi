@@ -25,10 +25,28 @@ funciona aqui?*
 
 ## Como rodar
 
+Em máquina nova, instalar as dependências primeiro — `node_modules/` não é
+versionado:
+
 ```bash
 cd spike-overlay
+npm install
+```
+
+Depois:
+
+```bash
 npm run tauri dev
 ```
+
+A primeira execução compila as dependências Rust do Tauri e demora alguns
+minutos.
+
+> **Telas menores que 1920x1080.** A geometria das janelas é fixa em
+> `spike-overlay/src-tauri/src/lib.rs`: overlay em `1500,800`, grade de
+> `1000x900` em `80,40`. Num notebook de 1366x768 alguma das duas cai
+> parcialmente fora da tela. As constantes estão nomeadas e comentadas no
+> topo do arquivo — ajustar antes de rodar.
 
 Abre a janela `pet` em **modo overlay**, com click-through **desligado**.
 Todo o resto é feito pelo teclado, com a janela em foco. Nenhuma edição de
