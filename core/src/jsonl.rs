@@ -10,16 +10,27 @@ impl LineBuffer {
         Self { pending: String::new() }
     }
 
+    /// Corta o pedaço acumulado em linhas completas de uma vez só.
+    ///
+    /// Fatiar linha a linha com `drain(..=idx)` reposicionaria todo o resto
+    /// do buffer a cada linha: num arquivo grande lido de uma vez (o maior
+    /// do corpus tem 124 MB), isso é quadrático e trava o arranque por
+    /// minutos. Aqui o buffer é percorrido uma vez e reposicionado uma vez.
     pub fn push(&mut self, chunk: &str) -> Vec<String> {
         self.pending.push_str(chunk);
+        let Some(ultima_quebra) = self.pending.rfind('\n') else {
+            return Vec::new();
+        };
+        let corte = ultima_quebra + 1;
+
         let mut out = Vec::new();
-        while let Some(idx) = self.pending.find('\n') {
-            let line: String = self.pending.drain(..=idx).collect();
-            let trimmed = line.trim_end_matches(['\n', '\r']);
+        for linha in self.pending[..corte].split('\n') {
+            let trimmed = linha.trim_end_matches(['\n', '\r']);
             if !trimmed.is_empty() {
                 out.push(trimmed.to_string());
             }
         }
+        self.pending.drain(..corte);
         out
     }
 

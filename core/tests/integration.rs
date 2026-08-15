@@ -93,7 +93,7 @@ fn crescimento_incremental_nao_duplica_nem_perde_prompt() {
     let adapter = ClaudeCodeAdapter;
     let mut capturados: Vec<String> = Vec::new();
 
-    let mut ler = |cursor: &mut FileCursor, capturados: &mut Vec<String>| {
+    let ler = |cursor: &mut FileCursor, capturados: &mut Vec<String>| {
         for l in cursor.read_new().unwrap() {
             if let Some(e) = adapter.parse_line(&l, "s1") {
                 capturados.push(e.text);
