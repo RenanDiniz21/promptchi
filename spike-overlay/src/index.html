@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>spike-overlay</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <!-- Começa em modo overlay, click-through desligado (ver main.js) -->
+  <body class="mode-overlay">
+    <div id="app">
+      <!-- Modo GRADE (tecla G): folha inteira + linhas de grade + ajuda -->
+      <div id="grid">
+        <div id="grid-sheet"></div>
+      </div>
+
+      <!-- Modo OVERLAY (tecla A): só o sprite, nenhum outro pixel -->
+      <div id="pet"></div>
+
+      <!-- Ajuda: só aparece no modo grade (CSS) -->
+      <div id="help">
+        <strong>Promptchi — spike M0</strong>
+        <p>
+          <kbd>G</kbd> grade &nbsp;
+          <kbd>A</kbd> overlay &nbsp;
+          <kbd>C</kbd> click-through: <span id="click-through-state">OFF</span> &nbsp;
+          <kbd>Esc</kbd> sair
+        </p>
+        <p>
+          célula <span id="info-cell"></span> px &middot;
+          colunas <span id="info-cols"></span> &middot;
+          linhas <span id="info-rows"></span> &middot;
+          folha <span id="info-sheet"></span> px
+        </p>
+      </div>
+    </div>
+  </body>
+</html>
