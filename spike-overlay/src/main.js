@@ -8,6 +8,13 @@
 //
 // Começa em modo overlay com click-through DESLIGADO (senão a janela não
 // recebe teclado — ver nota no prompt/brief).
+//
+// Click-through NÃO fica ligado pra sempre: o lado Rust (lib.rs) desliga
+// sozinho ao perder foco (o que acontece naturalmente ao testar, já que
+// clicar "através" da janela dá foco ao app de baixo) e tem um timer de
+// segurança (CLICK_THROUGH_AUTO_OFF_SECS em lib.rs) como rede. Este
+// arquivo só reflete o estado real vindo do Rust via polling — não
+// assume que o clique em C é a única forma de desligar.
 
 const { invoke } = window.__TAURI__.core;
 
@@ -23,13 +30,25 @@ function applyMode(nextMode) {
   );
 }
 
-function applyClickThrough(enabled) {
-  clickThrough = enabled;
+function requestClickThrough(enabled) {
   invoke("set_click_through", { enabled }).catch((err) =>
     console.error("set_click_through falhou:", err)
   );
+}
+
+function renderClickThroughStatus(status) {
+  clickThrough = status.enabled;
   const el = document.getElementById("click-through-state");
-  if (el) el.textContent = enabled ? "ON" : "OFF";
+  if (!el) return;
+  el.textContent = status.enabled
+    ? `ON — desliga sozinho em ${status.seconds_left}s (ou ao perder foco)`
+    : "OFF";
+}
+
+function pollClickThroughStatus() {
+  invoke("get_click_through_state")
+    .then(renderClickThroughStatus)
+    .catch((err) => console.error("get_click_through_state falhou:", err));
 }
 
 function fillGridInfo() {
@@ -48,7 +67,12 @@ function fillGridInfo() {
 window.addEventListener("DOMContentLoaded", () => {
   fillGridInfo();
   applyMode("overlay");
-  applyClickThrough(false);
+  requestClickThrough(false);
+  pollClickThroughStatus();
+  // Roda o tempo todo (barato, 2x/s). Não vaza pixel no modo overlay
+  // porque #help continua "display: none" lá (ver styles.css) — só
+  // atualiza um texto que fica invisível.
+  setInterval(pollClickThroughStatus, 500);
 
   window.addEventListener("keydown", (e) => {
     switch (e.key) {
@@ -62,7 +86,7 @@ window.addEventListener("DOMContentLoaded", () => {
         break;
       case "c":
       case "C":
-        applyClickThrough(!clickThrough);
+        requestClickThrough(!clickThrough);
         break;
       case "Escape":
         invoke("quit_app").catch((err) =>

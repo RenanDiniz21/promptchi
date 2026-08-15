@@ -24,4 +24,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Só pra serializar o retorno de get_click_through_state (contagem
+# regressiva do click-through) de volta pro frontend via invoke().
+serde = { version = "1", features = ["derive"] }
 
