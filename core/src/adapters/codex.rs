@@ -10,7 +10,18 @@ use crate::types::{PromptEvent, Provider};
 /// (centenas de MB no corpus real) procurando só o cabeçalho.
 const MARCA_SESSION_META: &str = "\"session_meta\"";
 
-/// O que sabemos sobre uma sessão do Codex a partir do seu `session_meta`.
+/// O que o `session_meta` conta sobre a sessão.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InfoSessao {
+    pub origem: OrigemSessao,
+    /// `payload.forked_from_id` presente: a sessão foi criada por fork de
+    /// outra e abre reemitindo o histórico da sessão-pai. É a única
+    /// situação em que a captura vê o mesmo prompt duas vezes, e por isso a
+    /// única em que a deduplicação por conteúdo se justifica.
+    pub forkada: bool,
+}
+
+/// De onde vem uma sessão do Codex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrigemSessao {
     /// `thread_source == "user"`: conversa digitada por gente.
@@ -35,7 +46,7 @@ pub enum OrigemSessao {
 /// registrada e os prompts dela são descartados por precaução.
 #[derive(Debug, Default)]
 pub struct CodexAdapter {
-    sessoes: HashMap<String, OrigemSessao>,
+    sessoes: HashMap<String, InfoSessao>,
 }
 
 impl CodexAdapter {
@@ -54,14 +65,29 @@ impl CodexAdapter {
             return;
         }
         let Some(payload) = v.get("payload") else { return };
-        let origem = if e_subagente(payload) { OrigemSessao::Subagente } else { OrigemSessao::Humana };
-        self.sessoes.insert(session_id.to_string(), origem);
+        let info = InfoSessao {
+            origem: if e_subagente(payload) { OrigemSessao::Subagente } else { OrigemSessao::Humana },
+            forkada: payload.get("forked_from_id").is_some_and(|v| !v.is_null()),
+        };
+        self.sessoes.insert(session_id.to_string(), info);
+    }
+
+    /// O que se sabe da sessão, ou `None` se o `session_meta` dela ainda não
+    /// passou por [`CodexAdapter::registrar_sessao`].
+    pub fn info(&self, session_id: &str) -> Option<InfoSessao> {
+        self.sessoes.get(session_id).copied()
     }
 
     /// Origem já conhecida da sessão, ou `None` se o `session_meta` dela
     /// ainda não passou por [`CodexAdapter::registrar_sessao`].
     pub fn origem(&self, session_id: &str) -> Option<OrigemSessao> {
-        self.sessoes.get(session_id).copied()
+        self.info(session_id).map(|i| i.origem)
+    }
+
+    /// `true` só para sessão criada por fork de outra — a única que reemite
+    /// histórico e, portanto, a única que precisa de deduplicação.
+    pub fn e_fork(&self, session_id: &str) -> bool {
+        self.info(session_id).is_some_and(|i| i.forkada)
     }
 }
 
@@ -239,6 +265,31 @@ mod tests {
         ad.registrar_sessao(l, "fork");
         assert_eq!(ad.origem("fork"), Some(OrigemSessao::Humana));
         assert!(ad.parse_line(USER_MESSAGE, "fork").is_some());
+    }
+
+    #[test]
+    fn forked_from_id_marca_a_sessao_como_fork() {
+        let l = r#"{"type":"session_meta","payload":{"id":"x","forked_from_id":"y","source":"vscode","thread_source":"user"}}"#;
+        let mut ad = CodexAdapter::new();
+        ad.registrar_sessao(l, "fork");
+        assert!(ad.e_fork("fork"));
+        assert_eq!(
+            ad.info("fork"),
+            Some(InfoSessao { origem: OrigemSessao::Humana, forkada: true })
+        );
+    }
+
+    #[test]
+    fn sessao_sem_forked_from_id_nao_e_fork() {
+        let mut ad = CodexAdapter::new();
+        ad.registrar_sessao(META_HUMANA, "s9");
+        assert!(!ad.e_fork("s9"));
+        assert!(!ad.e_fork("sessao_que_nunca_vi"));
+
+        // `forked_from_id: null` tambem nao conta.
+        let l = r#"{"type":"session_meta","payload":{"id":"x","forked_from_id":null,"thread_source":"user"}}"#;
+        ad.registrar_sessao(l, "nula");
+        assert!(!ad.e_fork("nula"));
     }
 
     #[test]
