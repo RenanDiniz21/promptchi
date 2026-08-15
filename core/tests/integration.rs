@@ -66,6 +66,36 @@ fn replay_de_sessao_de_subagente_do_codex_nao_captura_nada() {
     assert!(eventos.is_empty(), "sessão de subagente não pode emitir prompt: {eventos:?}");
 }
 
+/// Regressão do bug real: arquivo de subagente cujo replay reemite, mais
+/// adiante, o `session_meta` da sessão-pai (humana, sem `forked_from_id`).
+/// O primeiro `session_meta` — o de subagente — tem que vencer do começo ao
+/// fim do arquivo: nenhum prompt pode ser emitido, e a origem não pode virar
+/// `Humana` no meio da leitura.
+#[test]
+fn replay_com_segundo_session_meta_nao_sobrescreve_a_origem() {
+    let mut cursor = FileCursor::new(fixture("codex_subagente_com_replay.jsonl"));
+    let mut adapter = CodexAdapter::new();
+
+    let linhas = cursor.read_new().unwrap();
+    let mut eventos = Vec::new();
+    for l in &linhas {
+        adapter.registrar_sessao(l, "sessao-replay");
+        // Verifica em TODA linha, não só no fim: é exatamente a regressão
+        // medida — a origem virava `Humana` assim que o segundo
+        // `session_meta` (o da sessão-pai) era lido no meio do arquivo.
+        assert_eq!(
+            adapter.origem("sessao-replay"),
+            Some(promptchi_core::adapters::codex::OrigemSessao::Subagente),
+            "origem mudou de Subagente para outra coisa apos ler: {l}"
+        );
+        if let Some(e) = adapter.parse_line(l, "sessao-replay") {
+            eventos.push(e);
+        }
+    }
+
+    assert!(eventos.is_empty(), "sessao de subagente com replay vazou prompt: {eventos:?}");
+}
+
 #[test]
 fn segunda_leitura_nao_reprocessa_nada() {
     let mut cursor = FileCursor::new(fixture("claude_code.jsonl"));

@@ -69,7 +69,17 @@ impl CodexAdapter {
             origem: if e_subagente(payload) { OrigemSessao::Subagente } else { OrigemSessao::Humana },
             forkada: payload.get("forked_from_id").is_some_and(|v| !v.is_null()),
         };
-        self.sessoes.insert(session_id.to_string(), info);
+        // O PRIMEIRO `session_meta` vence, de propósito: ele é o cabeçalho
+        // real do arquivo e a identidade da sessão. Arquivo de subagente (ou
+        // de fork) reemite o histórico inteiro da sessão-pai mais adiante —
+        // incluindo o `session_meta` dela — porque o replay é um despejo
+        // completo, não um diff. Se um `session_meta` posterior pudesse
+        // sobrescrever, a sessão nasceria classificada corretamente e o
+        // replay a reclassificaria como humana no meio do arquivo, vazando
+        // os prompts do subagente E revogando `forkada` (que zera a
+        // deduplicação, já que ela só age em sessão forkada). Por isso
+        // `entry().or_insert()`, não `insert()`: NÃO "otimizar" de volta.
+        self.sessoes.entry(session_id.to_string()).or_insert(info);
     }
 
     /// O que se sabe da sessão, ou `None` se o `session_meta` dela ainda não
@@ -290,6 +300,43 @@ mod tests {
         let l = r#"{"type":"session_meta","payload":{"id":"x","forked_from_id":null,"thread_source":"user"}}"#;
         ad.registrar_sessao(l, "nula");
         assert!(!ad.e_fork("nula"));
+    }
+
+    #[test]
+    fn primeiro_session_meta_vence_subagente_depois_humano() {
+        // Simula o replay: session_meta de subagente abre o arquivo, e o
+        // session_meta da sessão-pai (humana) chega depois, no meio do
+        // histórico reemitido. A origem tem que continuar Subagente.
+        let mut ad = CodexAdapter::new();
+        ad.registrar_sessao(META_SUBAGENTE, "s");
+        ad.registrar_sessao(META_HUMANA, "s");
+        assert_eq!(ad.origem("s"), Some(OrigemSessao::Subagente));
+        assert!(ad.parse_line(USER_MESSAGE, "s").is_none(), "prompt do subagente vazou apos o replay");
+    }
+
+    #[test]
+    fn primeiro_session_meta_vence_humano_depois_subagente() {
+        // Simétrico do anterior: o que importa é a ORDEM de chegada, não o
+        // valor. Sessão humana observada primeiro continua humana mesmo se
+        // um session_meta de subagente aparecer depois na mesma sessão.
+        let mut ad = CodexAdapter::new();
+        ad.registrar_sessao(META_HUMANA, "s");
+        ad.registrar_sessao(META_SUBAGENTE, "s");
+        assert_eq!(ad.origem("s"), Some(OrigemSessao::Humana));
+        assert!(ad.parse_line(USER_MESSAGE, "s").is_some(), "prompt humano legitimo foi descartado");
+    }
+
+    #[test]
+    fn flag_forkada_do_primeiro_session_meta_nao_e_revogada() {
+        // primeiro session_meta com forked_from_id; segundo sem. `e_fork`
+        // precisa continuar `true` — é essa flag que liga a deduplicação.
+        let com_fork = r#"{"type":"session_meta","payload":{"id":"x","forked_from_id":"y","parent_thread_id":"y","thread_source":"subagent"}}"#;
+        let sem_fork = r#"{"type":"session_meta","payload":{"id":"x","source":"vscode","thread_source":"user"}}"#;
+        let mut ad = CodexAdapter::new();
+        ad.registrar_sessao(com_fork, "s");
+        ad.registrar_sessao(sem_fork, "s");
+        assert!(ad.e_fork("s"), "flag forkada foi revogada pelo segundo session_meta");
+        assert_eq!(ad.origem("s"), Some(OrigemSessao::Subagente));
     }
 
     #[test]
