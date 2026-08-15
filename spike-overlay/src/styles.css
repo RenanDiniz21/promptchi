@@ -1,0 +1,154 @@
+/* Spike M0 — descartável. Sem otimização, sem abstração. */
+
+/* ============================================================
+   CONSTANTES DA GRADE — ajustar aqui se a grade não bater
+   (célula/colunas/linhas são HIPÓTESE a confirmar visualmente,
+   ver docs/superpowers/notes/spritesheet-grid.md)
+   ============================================================ */
+:root {
+  --sheet-w: 1536px;
+  --sheet-h: 2288px;
+  --cell-w: 192px;
+  --cell-h: 208px;
+  --cols: 8;
+  --rows: 11;
+
+  /* animação idle: linha 1 do spritesheet (índice 0), 7 frames */
+  --idle-row: 0;
+  --idle-frames: 7;
+
+  /* fator de zoom só do modo grade, pra caber a folha inteira na janela */
+  --grid-scale: 0.35;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent !important;
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+#app {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+/* ============================================================
+   MODO OVERLAY (tecla A) — janela pequena e transparente.
+   Nada além do sprite pode aparecer aqui: qualquer pixel extra
+   atrapalha a verificação de transparência real.
+   ============================================================ */
+body.mode-overlay #grid,
+body.mode-overlay #help {
+  display: none;
+}
+
+body.mode-overlay #pet {
+  display: block;
+}
+
+#pet {
+  display: none;
+  width: var(--cell-w);
+  height: var(--cell-h);
+  margin: 16px auto;
+  background-image: url("./kuriboh.webp");
+  background-repeat: no-repeat;
+  background-position: 0 0;
+  animation: idle 1.05s steps(var(--idle-frames)) infinite;
+}
+
+@keyframes idle {
+  from {
+    background-position: 0px calc(var(--cell-h) * var(--idle-row) * -1);
+  }
+  to {
+    background-position: calc(var(--cell-w) * var(--idle-frames) * -1)
+      calc(var(--cell-h) * var(--idle-row) * -1);
+  }
+}
+
+/* ============================================================
+   MODO GRADE (tecla G) — janela maior.
+   A janela continua transparent:true no nível do SO (não dá pra
+   mudar em runtime no Tauri v2 — ver comentário em lib.rs). Este
+   fundo sólido cobre 100% da área da janela, então visualmente
+   funciona como opaco mesmo a janela sendo transparente por
+   baixo. É o caminho descrito no prompt para quando a
+   propriedade não pode mudar em runtime.
+   ============================================================ */
+body.mode-grid #pet {
+  display: none;
+}
+
+body.mode-grid #app {
+  background: #1e1e1e;
+}
+
+body.mode-grid #grid,
+body.mode-grid #help {
+  display: block;
+}
+
+#grid {
+  display: none;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+}
+
+#grid-sheet {
+  width: var(--sheet-w);
+  height: var(--sheet-h);
+  background-image: url("./kuriboh.webp");
+  background-size: var(--sheet-w) var(--sheet-h);
+  position: absolute;
+  top: 56px;
+  left: 0;
+  transform: scale(var(--grid-scale));
+  transform-origin: top left;
+}
+
+/* linhas vermelhas verticais a cada --cell-w, azuis horizontais a cada --cell-h */
+#grid-sheet::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+      to right,
+      rgba(255, 0, 0, 0.9) 0 2px,
+      transparent 2px var(--cell-w)
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 128, 255, 0.9) 0 2px,
+      transparent 2px var(--cell-h)
+    );
+}
+
+#help {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 10px;
+  color: #f0f0f0;
+  background: rgba(0, 0, 0, 0.6);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#help kbd {
+  background: #333;
+  border: 1px solid #555;
+  border-radius: 3px;
+  padding: 0 4px;
+}
