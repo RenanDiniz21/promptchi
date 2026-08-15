@@ -153,7 +153,11 @@ impl Estado {
         }
         let Some((provider, sessao)) = identificar(path) else { return };
 
-        self.anotar_mtime(path);
+        // Colhido ANTES da leitura de propósito: se uma escrita cair entre a
+        // consulta e a leitura, o valor guardado fica velho e a revarredura
+        // seguinte reprocessa o arquivo. Errar para o lado de reler é barato
+        // (o cursor só entrega bytes novos) e não perde prompt.
+        let mtime_antes = mtime_de(path);
 
         let cursor = self
             .cursores
@@ -166,10 +170,20 @@ impl Estado {
         let linhas = match cursor.read_new() {
             Ok(l) => l,
             Err(e) => {
+                // Sem anotar o `mtime`: marcar o arquivo como visto agora
+                // faria a revarredura pular ele até a próxima escrita. Num
+                // arquivo cuja última escrita já ocorreu, um erro transitório
+                // de I/O (violação de compartilhamento no Windows) custaria a
+                // cauda inteira do arquivo.
+                self.mtimes.remove(path);
                 eprintln!("erro lendo {}, seguindo: {e}", path.display());
                 return;
             }
         };
+        // Só depois de uma leitura bem-sucedida o arquivo conta como visto.
+        if let Some(m) = mtime_antes {
+            self.mtimes.insert(path.to_path_buf(), m);
+        }
         if linhas.is_empty() {
             return;
         }
@@ -197,9 +211,19 @@ impl Estado {
                 continue;
             };
 
-            if !self.dedup.registrar(evento.provider, &evento.text) {
-                self.contadores.entry(provider).or_default().duplicadas += 1;
-                continue;
+            // Deduplicação só onde ela resolve alguma coisa: sessão do Codex
+            // criada por fork, que abre reemitindo o histórico da
+            // sessão-pai. As sessões não forkadas alimentam o conjunto — é
+            // delas que vêm os prompts originais que o replay do fork vai
+            // repetir — mas não são barradas por ele. O Claude Code fica
+            // fora do caminho inteiro: não tem fork que reemita histórico, e
+            // submetê-lo à deduplicação só descartaria repetição legítima.
+            if provider == Provider::Codex {
+                let inedito = self.dedup.registrar(evento.provider, &evento.text);
+                if !inedito && codex.e_fork(&sessao) {
+                    self.contadores.entry(provider).or_default().duplicadas += 1;
+                    continue;
+                }
             }
 
             self.contadores.entry(provider).or_default().eventos += 1;
@@ -230,23 +254,11 @@ impl Estado {
         }
     }
 
-    /// Guarda o `mtime` corrente ANTES da leitura. Se uma escrita cair entre
-    /// a consulta e a leitura, o valor guardado fica velho e a revarredura
-    /// seguinte processa o arquivo de novo — errar para o lado de reler é
-    /// barato (o cursor só entrega bytes novos) e não perde prompt.
-    fn anotar_mtime(&mut self, path: &Path) {
-        if let Ok(m) = std::fs::metadata(path).and_then(|md| md.modified()) {
-            self.mtimes.insert(path.to_path_buf(), m);
-        }
-    }
-
     /// `true` se o arquivo mudou (ou se não deu para saber) desde a última
-    /// vez que passou por aqui. Filtro de candidatos da revarredura; quem
+    /// leitura bem-sucedida. Filtro de candidatos da revarredura; quem
     /// processa continua sendo o mesmo `processar` do caminho de evento.
     fn mudou_desde_a_ultima_vez(&self, path: &Path) -> bool {
-        let Ok(atual) = std::fs::metadata(path).and_then(|md| md.modified()) else {
-            return true;
-        };
+        let Some(atual) = mtime_de(path) else { return true };
         self.mtimes.get(path) != Some(&atual)
     }
 
@@ -281,6 +293,24 @@ impl Estado {
     /// um dia calmo não vira ruído, e um dia em que a captura quebrou fica
     /// visível como "muitas linhas, zero prompts".
     fn imprimir_resumo(&mut self, desde_o_arranque: Duration) {
+        let linhas = self.montar_resumo();
+        if linhas.is_empty() {
+            return;
+        }
+        eprintln!(
+            "resumo apos {} min de execucao ({} sessoes, {} prompts na janela de deduplicacao):",
+            desde_o_arranque.as_secs() / 60,
+            self.cursores.len(),
+            self.dedup.len()
+        );
+        for l in linhas {
+            eprintln!("{l}");
+        }
+    }
+
+    /// Uma linha por provider que se mexeu desde o último resumo, e nada
+    /// quando ninguém se mexeu. Atualiza a base de comparação.
+    fn montar_resumo(&mut self) -> Vec<String> {
         let mut linhas: Vec<String> = Vec::new();
         for (provider, atual) in &self.contadores {
             let anterior = self.contadores_do_ultimo_resumo.get(provider).copied().unwrap_or_default();
@@ -302,20 +332,13 @@ impl Estado {
                 delta.duplicadas,
             ));
         }
-        if linhas.is_empty() {
-            return;
-        }
-        eprintln!(
-            "resumo apos {} min de execucao ({} sessoes, {} prompts na janela de deduplicacao):",
-            desde_o_arranque.as_secs() / 60,
-            self.cursores.len(),
-            self.dedup.len()
-        );
-        for l in linhas {
-            eprintln!("{l}");
-        }
         self.contadores_do_ultimo_resumo = self.contadores.clone();
+        linhas
     }
+}
+
+fn mtime_de(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|md| md.modified()).ok()
 }
 
 fn main() -> anyhow::Result<()> {
@@ -517,6 +540,43 @@ mod tests {
         assert!(jsonls_em(&dir.path().join("nao_existe")).is_empty());
     }
 
+    /// Monta uma raiz do Claude Code dentro de um diretório temporário e
+    /// devolve o caminho do arquivo de sessão, já com o conteúdo dado.
+    fn sessao_claude(dir: &Path, nome: &str, conteudo: &str) -> PathBuf {
+        let raiz = dir.join(".claude").join("projects").join("proj");
+        std::fs::create_dir_all(&raiz).unwrap();
+        let p = raiz.join(nome);
+        std::fs::write(&p, conteudo.as_bytes()).unwrap();
+        p
+    }
+
+    /// Idem para o Codex. `nome` precisa carregar o UUID no formato do
+    /// `rollout-*.jsonl`, de onde sai o id de sessão.
+    fn sessao_codex(dir: &Path, nome: &str, conteudo: &str) -> PathBuf {
+        let raiz = dir.join(".codex").join("sessions");
+        std::fs::create_dir_all(&raiz).unwrap();
+        let p = raiz.join(nome);
+        std::fs::write(&p, conteudo.as_bytes()).unwrap();
+        p
+    }
+
+    fn prompt_claude(texto: &str) -> String {
+        format!(
+            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{texto}\"}},\"timestamp\":\"t\"}}\n"
+        )
+    }
+
+    fn prompt_codex(texto: &str) -> String {
+        format!(
+            "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"{texto}\"}},\"timestamp\":\"t\"}}\n"
+        )
+    }
+
+    const META_CODEX: &str =
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"x\",\"source\":\"vscode\",\"thread_source\":\"user\"}}\n";
+    const META_CODEX_FORK: &str =
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"z\",\"forked_from_id\":\"x\",\"source\":\"vscode\",\"thread_source\":\"user\"}}\n";
+
     #[test]
     fn mtime_pula_arquivo_que_nao_mudou() {
         let dir = tempfile::tempdir().unwrap();
@@ -525,20 +585,43 @@ mod tests {
 
         let mut estado = Estado::new();
         assert!(estado.mudou_desde_a_ultima_vez(&p), "arquivo nunca visto conta como mudado");
-        estado.anotar_mtime(&p);
+        estado.mtimes.insert(p.clone(), mtime_de(&p).unwrap());
         assert!(!estado.mudou_desde_a_ultima_vez(&p), "arquivo intocado deveria ser pulado");
+    }
+
+    #[test]
+    fn erro_de_leitura_nao_marca_o_arquivo_como_visto() {
+        let dir = tempfile::tempdir().unwrap();
+        // Um DIRETÓRIO com nome de .jsonl faz `read_new` falhar com um erro
+        // que não é `NotFound` — o mesmo braço em que cairia uma violação de
+        // compartilhamento no Windows.
+        let raiz = dir.path().join(".claude").join("projects").join("proj");
+        std::fs::create_dir_all(&raiz).unwrap();
+        let p = raiz.join("quebrado.jsonl");
+        std::fs::create_dir(&p).unwrap();
+
+        let claude = ClaudeCodeAdapter;
+        let mut codex = CodexAdapter::new();
+        let mut estado = Estado::new();
+        estado.processar(&p, &claude, &mut codex, true);
+
+        assert!(
+            !estado.mtimes.contains_key(&p),
+            "leitura que falhou nao pode marcar o arquivo como visto: a \
+             revarredura pularia ele ate a proxima escrita"
+        );
+        assert!(
+            estado.mudou_desde_a_ultima_vez(&p),
+            "a revarredura precisa continuar tentando esse arquivo"
+        );
     }
 
     #[test]
     fn contadores_registram_leitura_e_rejeicao() {
         let dir = tempfile::tempdir().unwrap();
-        // O caminho precisa parecer uma raiz do Claude Code para
-        // `identificar` reconhecer o provider.
-        let raiz = dir.path().join(".claude").join("projects").join("proj");
-        std::fs::create_dir_all(&raiz).unwrap();
-        let p = raiz.join("sessao-1.jsonl");
-        std::fs::write(
-            &p,
+        let p = sessao_claude(
+            dir.path(),
+            "sessao-1.jsonl",
             concat!(
                 r#"{"type":"user","message":{"role":"user","content":"prompt de verdade"},"timestamp":"t1"}"#,
                 "\n",
@@ -546,10 +629,8 @@ mod tests {
                 "\n",
                 r#"{"type":"user","message":{"role":"user","content":"<system-reminder>ruido</system-reminder>"},"timestamp":"t3"}"#,
                 "\n",
-            )
-            .as_bytes(),
-        )
-        .unwrap();
+            ),
+        );
 
         let claude = ClaudeCodeAdapter;
         let mut codex = CodexAdapter::new();
@@ -564,20 +645,12 @@ mod tests {
     }
 
     #[test]
-    fn revarredura_nao_reemite_prompt_ja_capturado() {
+    fn revarredura_nao_reemite_o_que_o_cursor_ja_entregou() {
+        // Idempotência vem do cursor, não da deduplicação: processar o mesmo
+        // arquivo de novo (evento e revarredura pisando um no outro) não
+        // pode reemitir nada.
         let dir = tempfile::tempdir().unwrap();
-        let raiz = dir.path().join(".claude").join("projects").join("proj");
-        std::fs::create_dir_all(&raiz).unwrap();
-        let p = raiz.join("sessao-1.jsonl");
-        std::fs::write(
-            &p,
-            concat!(
-                r#"{"type":"user","message":{"role":"user","content":"prompt unico"},"timestamp":"t1"}"#,
-                "\n"
-            )
-            .as_bytes(),
-        )
-        .unwrap();
+        let p = sessao_claude(dir.path(), "sessao-1.jsonl", &prompt_claude("prompt unico"));
 
         let claude = ClaudeCodeAdapter;
         let mut codex = CodexAdapter::new();
@@ -585,20 +658,162 @@ mod tests {
 
         estado.processar(&p, &claude, &mut codex, true);
         assert_eq!(estado.total, 1);
-
-        // Mesmo arquivo processado de novo (evento + revarredura pisando um
-        // no outro) e o mesmo texto reaparecendo numa sessão nova, que é o
-        // que o fork do Codex faz.
         estado.processar(&p, &claude, &mut codex, true);
-        let outra = raiz.join("sessao-2.jsonl");
-        std::fs::copy(&p, &outra).unwrap();
-        estado.processar(&outra, &claude, &mut codex, true);
+        estado.processar(&p, &claude, &mut codex, true);
+        assert_eq!(estado.total, 1, "revarredura reemitiu prompt");
+    }
 
-        assert_eq!(estado.total, 1, "prompt duplicado foi emitido");
+    #[test]
+    fn prompt_repetido_do_claude_code_e_sempre_emitido() {
+        // O Claude Code não tem fork que reemita histórico. Submetê-lo à
+        // deduplicação só descartaria repetição legítima — medido no corpus
+        // real: 155 prompts humanos perdidos, "yes" e "Sim" na frente.
+        let dir = tempfile::tempdir().unwrap();
+        let repetido = prompt_claude("yes");
+
+        let a = sessao_claude(dir.path(), "sessao-1.jsonl", &repetido);
+        let b = sessao_claude(dir.path(), "sessao-2.jsonl", &repetido);
+
+        let claude = ClaudeCodeAdapter;
+        let mut codex = CodexAdapter::new();
+        let mut estado = Estado::new();
+        estado.processar(&a, &claude, &mut codex, true);
+        estado.processar(&b, &claude, &mut codex, true);
+
+        assert_eq!(estado.total, 2, "prompt legitimo do Claude Code foi descartado");
         assert_eq!(
             estado.contadores.get(&Provider::ClaudeCode).copied().unwrap_or_default().duplicadas,
+            0
+        );
+    }
+
+    #[test]
+    fn prompt_repetido_em_sessao_do_codex_sem_fork_e_emitido_duas_vezes() {
+        let dir = tempfile::tempdir().unwrap();
+        let conteudo = format!("{META_CODEX}{}{}", prompt_codex("yes"), prompt_codex("yes"));
+        let p = sessao_codex(
+            dir.path(),
+            "rollout-2026-08-15T10-00-00-019efa54-f763-7691-91d3-c9a38153c864.jsonl",
+            &conteudo,
+        );
+
+        let claude = ClaudeCodeAdapter;
+        let mut codex = CodexAdapter::new();
+        let mut estado = Estado::new();
+        estado.processar(&p, &claude, &mut codex, true);
+
+        assert!(!codex.e_fork("019efa54-f763-7691-91d3-c9a38153c864"));
+        assert_eq!(estado.total, 2, "sessao sem fork nao pode ser deduplicada");
+        assert_eq!(
+            estado.contadores.get(&Provider::Codex).copied().unwrap_or_default().duplicadas,
+            0
+        );
+    }
+
+    #[test]
+    fn prompt_repetido_em_sessao_forkada_do_codex_sai_uma_vez_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let conteudo = format!("{META_CODEX_FORK}{}{}", prompt_codex("yes"), prompt_codex("yes"));
+        let p = sessao_codex(
+            dir.path(),
+            "rollout-2026-08-15T10-10-00-019ffb2f-602a-71e3-ab30-000000000001.jsonl",
+            &conteudo,
+        );
+
+        let claude = ClaudeCodeAdapter;
+        let mut codex = CodexAdapter::new();
+        let mut estado = Estado::new();
+        estado.processar(&p, &claude, &mut codex, true);
+
+        assert!(codex.e_fork("019ffb2f-602a-71e3-ab30-000000000001"));
+        assert_eq!(estado.total, 1, "replay de fork vazou");
+        assert_eq!(
+            estado.contadores.get(&Provider::Codex).copied().unwrap_or_default().duplicadas,
             1
         );
+    }
+
+    #[test]
+    fn replay_de_fork_do_codex_repete_o_historico_da_sessao_pai() {
+        // O caso que o CRITICAL 2 descreve: a sessão-pai não é forkada e
+        // alimenta o conjunto; o fork reabre com o histórico dela mais um
+        // prompt novo. Só o prompt novo pode sair.
+        let dir = tempfile::tempdir().unwrap();
+        let pai = sessao_codex(
+            dir.path(),
+            "rollout-2026-08-15T10-00-00-019efa54-f763-7691-91d3-c9a38153c864.jsonl",
+            &format!("{META_CODEX}{}{}", prompt_codex("primeiro"), prompt_codex("segundo")),
+        );
+        let fork = sessao_codex(
+            dir.path(),
+            "rollout-2026-08-15T10-10-00-019ffb2f-602a-71e3-ab30-000000000001.jsonl",
+            &format!(
+                "{META_CODEX_FORK}{}{}{}",
+                prompt_codex("primeiro"),
+                prompt_codex("segundo"),
+                prompt_codex("terceiro, esse e novo")
+            ),
+        );
+
+        let claude = ClaudeCodeAdapter;
+        let mut codex = CodexAdapter::new();
+        let mut estado = Estado::new();
+        estado.processar(&pai, &claude, &mut codex, true);
+        assert_eq!(estado.total, 2);
+
+        estado.processar(&fork, &claude, &mut codex, true);
+        assert_eq!(estado.total, 3, "o fork deveria acrescentar so o prompt novo");
+        assert_eq!(
+            estado.contadores.get(&Provider::Codex).copied().unwrap_or_default().duplicadas,
+            2
+        );
+    }
+
+    #[test]
+    fn resumo_so_sai_quando_houve_movimento() {
+        let mut estado = Estado::new();
+        assert!(estado.montar_resumo().is_empty(), "sem contador, sem resumo");
+
+        estado.contadores.entry(Provider::ClaudeCode).or_default().linhas += 40_000;
+        assert_eq!(estado.montar_resumo().len(), 1, "houve movimento, tem que sair");
+        assert!(
+            estado.montar_resumo().is_empty(),
+            "sem movimento novo, o resumo nao pode se repetir"
+        );
+
+        estado.contadores.entry(Provider::ClaudeCode).or_default().eventos += 1;
+        assert_eq!(estado.montar_resumo().len(), 1, "movimento novo, resumo de novo");
+        assert!(estado.montar_resumo().is_empty());
+    }
+
+    #[test]
+    fn aviso_de_sessao_sem_meta_sai_uma_vez_so() {
+        use std::io::Write;
+
+        // Arquivo do Codex sem `session_meta`: a origem fica desconhecida.
+        let dir = tempfile::tempdir().unwrap();
+        let p = sessao_codex(
+            dir.path(),
+            "rollout-2026-08-15T10-00-00-019efa54-f763-7691-91d3-c9a38153c864.jsonl",
+            &prompt_codex("prompt orfao"),
+        );
+
+        let claude = ClaudeCodeAdapter;
+        let mut codex = CodexAdapter::new();
+        let mut estado = Estado::new();
+        estado.processar(&p, &claude, &mut codex, true);
+        assert_eq!(estado.avisadas_sem_meta.len(), 1, "o aviso deveria ter saido");
+        assert_eq!(estado.total, 0, "sessao de origem desconhecida nao emite");
+
+        // Segunda passagem com linha nova: a condição volta a valer, mas o
+        // aviso não pode sair de novo.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(prompt_codex("outro orfao").as_bytes()).unwrap();
+        drop(f);
+        estado.processar(&p, &claude, &mut codex, true);
+
+        assert_eq!(estado.avisadas_sem_meta.len(), 1, "o aviso se repetiu");
+        assert_eq!(estado.contadores.get(&Provider::Codex).copied().unwrap_or_default().linhas, 2);
     }
 
     #[test]

@@ -9,26 +9,36 @@ use promptchi_core::types::Provider;
 ///
 /// O binário roda o dia inteiro; sem teto, o conjunto cresceria para sempre.
 /// 4096 vem da medição do corpus real: a sessão mais longa do Codex tem 158
-/// `user_message`, o histórico inteiro da máquina tem 1762 (Codex) + 694
-/// (Claude Code), e a rajada de replay de um fork reemite no máximo o
-/// histórico da sessão-pai. 4096 cobre com folga qualquer dia de trabalho e
-/// qualquer janela de fork, custando algo como 100 KB de memória.
+/// `user_message` e o histórico inteiro da máquina, acumulado em 71 dias,
+/// tem 1762. A janela precisa cobrir o histórico da maior sessão-pai que
+/// pode ser reemitido de uma vez — 4096 é 26 vezes isso, custando algo como
+/// 100 KB de memória.
 pub const CAPACIDADE_DEDUP: usize = 4096;
 
-/// Conjunto FIFO com teto dos prompts já emitidos, para o mesmo prompt não
-/// sair duas vezes.
+/// Conjunto FIFO com teto dos prompts já emitidos, para o replay de fork do
+/// Codex não sair duas vezes.
 ///
-/// Existe por causa do fork de sessão do Codex: 51 dos 206 arquivos do
-/// corpus têm `forked_from_id`, 49 deles abrem reemitindo o histórico da
-/// sessão-pai, e 221 dos 304 `user_message` desses arquivos existem
-/// literalmente no arquivo-pai. Como o arquivo forkado carrega um id novo, o
-/// cursor dele nasce legitimamente em zero — a duplicação só dá para barrar
-/// olhando o conteúdo.
+/// Existe por causa do fork de sessão: 51 dos 206 arquivos do corpus têm
+/// `forked_from_id` e abrem reemitindo o histórico da sessão-pai. Como o
+/// arquivo forkado carrega um id novo, o cursor dele nasce legitimamente em
+/// zero — a duplicação só dá para barrar olhando o conteúdo.
+///
+/// **Quem consulta este conjunto importa tanto quanto o conjunto.** Ele é
+/// alimentado por todo prompt do Codex, mas só barra prompt de sessão
+/// forkada (ver `Estado::processar`). Medição sobre o corpus real, com o
+/// filtro de subagente já aplicado, mostra por quê: barrar todo mundo
+/// descartaria 155 prompts humanos legítimos — "yes", "Sim", "prossiga com
+/// a implementação", repetidos ao longo do dia — para evitar 6 duplicatas
+/// reais. Cerca de 25 prompts perdidos por duplicado evitado. Alimentar sem
+/// barrar é o que faz o replay do fork encontrar os prompts originais da
+/// sessão-pai, que não é forkada.
 ///
 /// A chave é o texto do prompt combinado com o provider. Não entra
 /// timestamp: medição sobre os forks reais mostra que o replay reescreve o
 /// timestamp de cada linha (nenhum par (timestamp, texto) se repete entre
-/// pai e fork), então incluí-lo anularia a deduplicação.
+/// pai e fork), então incluí-lo anularia a deduplicação. Não entra sessão: o
+/// replay é cross-sessão por definição, então incluí-la anularia o benefício
+/// e ainda manteria a perda intra-sessão.
 ///
 /// Guardamos hash de 64 bits, não o texto: memória constante por entrada,
 /// independente do tamanho do prompt.
@@ -94,6 +104,8 @@ mod tests {
         assert!(c.registrar(Provider::Codex, "dois"));
     }
 
+    /// O conjunto em si é agnóstico de provider — quem decide que só o
+    /// Codex passa por aqui é `Estado::processar`, e isso é testado lá.
     #[test]
     fn provider_faz_parte_da_chave() {
         let mut c = ConjuntoDeDuplicados::new(CAPACIDADE_DEDUP);
