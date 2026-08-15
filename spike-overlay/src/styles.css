@@ -110,7 +110,7 @@ body.mode-grid #help {
   background-image: url("./kuriboh.webp");
   background-size: var(--sheet-w) var(--sheet-h);
   position: absolute;
-  top: 40px;
+  top: 56px;
   left: 0;
   transform: scale(var(--grid-scale));
   transform-origin: top left;
