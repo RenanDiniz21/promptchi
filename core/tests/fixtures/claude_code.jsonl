@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"cria o endpoint de listagem"},"timestamp":"2026-07-15T13:00:00.000Z","cwd":"C:\\proj","isSidechain":false}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"}]},"timestamp":"2026-07-15T13:00:01.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"conteudo do arquivo"}]},"timestamp":"2026-07-15T13:00:02.000Z"}
+{"type":"user","isSidechain":true,"message":{"role":"user","content":"tarefa do subagente"},"timestamp":"2026-07-15T13:00:03.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]},"timestamp":"2026-07-15T13:00:04.000Z"}
+{"type":"user","message":{"role":"user","content":"agora adiciona paginacao"},"timestamp":"2026-07-15T13:00:05.000Z","cwd":"C:\\proj","isSidechain":false}
