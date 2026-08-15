@@ -1,4 +1,4 @@
-{"timestamp":"2026-06-24T15:52:40.182Z","type":"session_meta","payload":{"session_id":"019efa54-f763-7691-91d3-c9a38153c864","cwd":"C:\\proj"}}
+{"timestamp":"2026-06-24T15:52:40.182Z","type":"session_meta","payload":{"id":"019efa54-f763-7691-91d3-c9a38153c864","session_id":"019efa54-f763-7691-91d3-c9a38153c864","cwd":"C:\\proj","originator":"Codex Desktop","source":"vscode","thread_source":"user"}}
 {"timestamp":"2026-06-24T15:52:40.258Z","type":"event_msg","payload":{"type":"user_message","client_id":"abc","message":"o worker de refugo esta ignorando os ciclos\n","images":[]}}
 {"timestamp":"2026-06-24T15:53:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"vou verificar"}}
 {"timestamp":"2026-06-24T15:54:57.165Z","type":"event_msg","payload":{"type":"user_message","client_id":"def","message":"so dispara se todos forem refugo\n","images":[]}}
