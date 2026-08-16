@@ -241,7 +241,15 @@ fn e_continuacao(baixo: &str) -> bool {
     if palavras.len() > 3 {
         return false;
     }
-    if baixo.contains('/') || baixo.contains('\\') || baixo.contains('.') {
+    // Só conta como âncora o ponto que faz parte de extensão ou identificador,
+    // ou seja, seguido de alfanumérico. Ponto final de frase não é âncora —
+    // "sim." e "ok." são continuações legítimas, e são a forma mais comum
+    // delas. O '.' é ASCII de 1 byte, então fatiar em `i + 1` é fronteira
+    // válida em UTF-8.
+    let ponto_de_extensao = baixo
+        .char_indices()
+        .any(|(i, c)| c == '.' && baixo[i + 1..].starts_with(|p: char| p.is_alphanumeric()));
+    if baixo.contains('/') || baixo.contains('\\') || ponto_de_extensao {
         return false;
     }
     palavras.iter().all(|p| {
