@@ -81,7 +81,15 @@ fn e_continuacao(baixo: &str) -> bool {
     if palavras.len() > 3 {
         return false;
     }
-    if baixo.contains('/') || baixo.contains('\\') || baixo.contains('.') {
+    if baixo.contains('/') || baixo.contains('\\') {
+        return false;
+    }
+    // Ponto é âncora apenas se seguido de caractere alfanumérico (ex: main.rs).
+    // Ponto final de frase ou sozinho não impede continuação.
+    let ponto_de_extensao = baixo
+        .char_indices()
+        .any(|(i, c)| c == '.' && baixo[i + 1..].starts_with(|p: char| p.is_alphanumeric()));
+    if ponto_de_extensao {
         return false;
     }
     palavras.iter().all(|p| {
@@ -149,5 +157,25 @@ mod tests {
         assert_eq!(TipoPrompt::Correcao.as_str(), "correcao");
         assert_eq!(TipoPrompt::Pergunta.as_str(), "pergunta");
         assert_eq!(TipoPrompt::Followup.as_str(), "followup");
+    }
+
+    #[test]
+    fn continuacao_com_ponto_final_e_continuacao() {
+        assert_eq!(classificar("sim.", &ctx(2)), TipoPrompt::Continuacao);
+        assert_eq!(classificar("ok.", &ctx(2)), TipoPrompt::Continuacao);
+        assert_eq!(classificar("prossiga.", &ctx(2)), TipoPrompt::Continuacao);
+    }
+
+    #[test]
+    fn ponto_de_extensao_continua_bloqueando_continuacao() {
+        assert_eq!(classificar("roda main.rs", &ctx(2)), TipoPrompt::Followup);
+    }
+
+    #[test]
+    fn marcador_nao_casa_dentro_de_palavra() {
+        // "não" não deve casar dentro de "nãoentendi"
+        assert_eq!(classificar("nãoentendi", &ctx(2)), TipoPrompt::Followup);
+        // "no," não deve casar dentro de "nodejs"
+        assert_eq!(classificar("nodejs", &ctx(2)), TipoPrompt::Followup);
     }
 }
