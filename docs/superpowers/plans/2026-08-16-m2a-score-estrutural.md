@@ -1133,6 +1133,26 @@ git commit -m "feat: watcher exibe tipo e nota de cada prompt"
 
 Cada um vira seu próprio plano, e cada um produz software funcionando sozinho.
 
+## Correções aplicadas durante a execução
+
+O código-fonte em `core/src/scoring/` é a **fonte de verdade**. Os blocos deste
+plano ficam como registro do ponto de partida, e divergem nos pontos abaixo —
+todos defeitos deste texto, encontrados na revisão e corrigidos.
+
+| Onde | Defeito | Correção |
+|---|---|---|
+| Task 1, `e_continuacao` | `contains('.')` tratava ponto final de frase como âncora de extensão; `"sim."` deixava de ser continuação | só conta ponto seguido de alfanumérico |
+| Task 2, `e_ancora` | `ends_with(extensao)` falhava com pontuação colada; `"main.rs."` não era âncora | apara pontuação do fim antes de testar extensão |
+| Task 2, marcadores | `RESTRICOES`/`RUIDO` casavam substring sem fronteira; `"prevaleu"` contava como `"valeu"` | helper de fronteira de palavra nas duas pontas |
+| Task 3, `clareza`/`concisao` | multiplicavam antes de limitar, com pânico por overflow | `saturating_mul` / `saturating_add` |
+| Task 5, snapshot | soma agregada mascarava troca compensatória de notas entre casos | snapshot nota a nota, mensagem nomeia o caso |
+| Task 6, resumo | o trecho só incrementava a soma, nunca a contagem — média nunca imprimiria | incrementa os dois; `print!` trocado por `push_str`, coerente com a arquitetura real |
+| Revisão final, `e_ancora` | `"bug.Depois"` passava na heurística camelCase; `"24/08"` e `"e/ou"` passavam como caminho | camelCase por segmento; barra exige extensão ou segmento com 3+ caracteres não numérico |
+| Revisão final, `tem_fronteira_palavra` | `pos = start + 1` assumia caractere de 1 byte; constante futura com acento causaria pânico | avança por `len_utf8()` do caractere casado |
+
+Estado e débito conhecido em
+[`m2a-estado.md`](../notes/m2a-estado.md).
+
 ## Nota de calibração para quem executar
 
 Os pesos da rubrica na Task 3 são **hipótese calibrada**, não verdade. Foram
