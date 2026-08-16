@@ -102,14 +102,14 @@ fn especificidade(s: &Sinais) -> u8 {
 /// ao lado é claro; sozinho, não é.
 fn clareza(s: &Sinais) -> u8 {
     let orfaos = s.deiticos.saturating_sub(s.ancoras);
-    100u8.saturating_sub((orfaos * 30).min(70) as u8)
+    100u8.saturating_sub(orfaos.saturating_mul(30).min(70) as u8)
 }
 
 /// Penaliza cortesia vazia e verbosidade sem conteúdo. Não recompensa texto
 /// curto por ser curto: um prompt de 5 palavras sem ruído fica em 100.
 fn concisao(s: &Sinais) -> u8 {
-    let mut n = 100u8.saturating_sub((s.ruido * 20).min(60) as u8);
-    let conteudo = s.ancoras + s.restricoes;
+    let mut n = 100u8.saturating_sub(s.ruido.saturating_mul(20).min(60) as u8);
+    let conteudo = s.ancoras.saturating_add(s.restricoes);
     if s.palavras > 40 && conteudo == 0 {
         n = n.saturating_sub(30);
     }
@@ -198,5 +198,42 @@ mod tests {
     fn texto_vazio_nao_causa_panic() {
         let _ = avaliar(TipoPrompt::Inicial, &extrair(""));
         let _ = avaliar(TipoPrompt::Continuacao, &extrair("   "));
+    }
+
+    #[test]
+    fn formato_e_restricao_nao_pesam_em_pergunta_e_correcao() {
+        let s = extrair("sem usar regex, devolve em json");
+        for t in [TipoPrompt::Pergunta, TipoPrompt::Correcao] {
+            let d = avaliar(t, &s).1;
+            assert_eq!(d.formato, 0, "formato deveria ter peso zero em {t:?}, nao nota baixa");
+            assert_eq!(d.restricoes, 0, "restricoes deveria ter peso zero em {t:?}, nao nota baixa");
+        }
+    }
+
+    #[test]
+    fn sinais_com_valores_extremos_nao_causa_panic() {
+        let s = Sinais {
+            palavras: usize::MAX,
+            ancoras: usize::MAX,
+            restricoes: usize::MAX,
+            formato_pedido: true,
+            deiticos: usize::MAX,
+            ruido: usize::MAX,
+        };
+        for t in [
+            TipoPrompt::Inicial,
+            TipoPrompt::Followup,
+            TipoPrompt::Pergunta,
+            TipoPrompt::Continuacao,
+            TipoPrompt::Correcao,
+        ] {
+            let (n, d) = avaliar(t, &s);
+            assert!(n <= 100, "nota {n} fora do intervalo para {t:?} com sinais extremos");
+            assert!(d.especificidade <= 100);
+            assert!(d.restricoes <= 100);
+            assert!(d.formato <= 100);
+            assert!(d.clareza <= 100);
+            assert!(d.concisao <= 100);
+        }
     }
 }
