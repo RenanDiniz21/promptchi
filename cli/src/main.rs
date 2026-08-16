@@ -10,6 +10,7 @@ use promptchi_core::adapters::claude_code::ClaudeCodeAdapter;
 use promptchi_core::adapters::codex::{sessao_do_caminho, CodexAdapter};
 use promptchi_core::adapters::PromptSource;
 use promptchi_core::cursor::FileCursor;
+use promptchi_core::scoring::{pontuar, ContextoSessao};
 use promptchi_core::types::Provider;
 
 use dedup::{ConjuntoDeDuplicados, CAPACIDADE_DEDUP};
@@ -115,6 +116,14 @@ struct Estado {
     /// Sessões do Codex já avisadas por não terem `session_meta` observado,
     /// para o aviso sair uma vez só.
     avisadas_sem_meta: HashSet<String>,
+    /// Quantos prompts humanos já foram emitidos em cada sessão — é o
+    /// `prompts_anteriores` que `ContextoSessao` precisa para classificar o
+    /// próximo. Incrementado depois de pontuar, nunca antes: o primeiro
+    /// prompt de uma sessão precisa ver zero.
+    prompts_por_sessao: HashMap<(Provider, String), usize>,
+    /// Soma das notas e quantidade de prompts pontuados por provider, para
+    /// calcular a média no resumo sem guardar todas as notas.
+    soma_notas: HashMap<Provider, (u32, usize)>,
     total: usize,
 }
 
@@ -127,6 +136,8 @@ impl Estado {
             contadores: HashMap::new(),
             contadores_do_ultimo_resumo: HashMap::new(),
             avisadas_sem_meta: HashSet::new(),
+            prompts_por_sessao: HashMap::new(),
+            soma_notas: HashMap::new(),
             total: 0,
         }
     }
@@ -226,14 +237,23 @@ impl Estado {
                 }
             }
 
+            let chave = (provider, sessao.clone());
+            let anteriores = *self.prompts_por_sessao.get(&chave).unwrap_or(&0);
+            let score = pontuar(&evento.text, &ContextoSessao { prompts_anteriores: anteriores });
+            self.prompts_por_sessao.insert(chave, anteriores + 1);
+
             self.contadores.entry(provider).or_default().eventos += 1;
+            let soma_notas = self.soma_notas.entry(provider).or_default();
+            soma_notas.0 += score.valor as u32;
+            soma_notas.1 += 1;
             self.total += 1;
-            let preview: String = evento.text.chars().take(90).collect();
+            let preview: String = evento.text.chars().take(70).collect();
             println!(
-                "[{:>4}] {:<12} {}  {}",
+                "[{:>4}] {:<12} {:>3}  {:<12} {}",
                 self.total,
                 evento.provider.as_str(),
-                evento.timestamp,
+                score.valor,
+                score.tipo.as_str(),
                 preview
             );
         }
@@ -318,7 +338,7 @@ impl Estado {
             if !delta.houve_movimento() {
                 continue;
             }
-            linhas.push(format!(
+            let mut linha = format!(
                 "  {:<12} total: {} linhas, {} prompts, {} rejeitadas, {} duplicadas | \
                  desde o ultimo resumo: +{} linhas, +{} prompts, +{} rejeitadas, +{} duplicadas",
                 provider.as_str(),
@@ -330,7 +350,13 @@ impl Estado {
                 delta.eventos,
                 delta.rejeitadas,
                 delta.duplicadas,
-            ));
+            );
+            if let Some((soma, n)) = self.soma_notas.get(provider) {
+                if *n > 0 {
+                    linha.push_str(&format!(" | nota media: {}", soma / *n as u32));
+                }
+            }
+            linhas.push(linha);
         }
         self.contadores_do_ultimo_resumo = self.contadores.clone();
         linhas
@@ -784,6 +810,72 @@ mod tests {
         estado.contadores.entry(Provider::ClaudeCode).or_default().eventos += 1;
         assert_eq!(estado.montar_resumo().len(), 1, "movimento novo, resumo de novo");
         assert!(estado.montar_resumo().is_empty());
+    }
+
+    #[test]
+    fn prompts_por_sessao_conta_por_sessao_e_nao_globalmente() {
+        // ContextoSessao.prompts_anteriores precisa vir da sessão certa: uma
+        // sessão nova não pode herdar a contagem de outra sessão do mesmo
+        // provider.
+        let dir = tempfile::tempdir().unwrap();
+        let a = sessao_claude(
+            dir.path(),
+            "sessao-1.jsonl",
+            &format!("{}{}", prompt_claude("primeiro"), prompt_claude("segundo")),
+        );
+        let b = sessao_claude(dir.path(), "sessao-2.jsonl", &prompt_claude("terceiro"));
+
+        let claude = ClaudeCodeAdapter;
+        let mut codex = CodexAdapter::new();
+        let mut estado = Estado::new();
+        estado.processar(&a, &claude, &mut codex, true);
+        estado.processar(&b, &claude, &mut codex, true);
+
+        assert_eq!(
+            estado.prompts_por_sessao.get(&(Provider::ClaudeCode, "sessao-1".to_string())),
+            Some(&2)
+        );
+        assert_eq!(
+            estado.prompts_por_sessao.get(&(Provider::ClaudeCode, "sessao-2".to_string())),
+            Some(&1),
+            "sessao nova precisa comecar do zero, nao herdar contagem de outra sessao"
+        );
+    }
+
+    #[test]
+    fn resumo_inclui_nota_media_quando_ha_prompt_pontuado() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = sessao_claude(
+            dir.path(),
+            "sessao-1.jsonl",
+            &prompt_claude("cria o endpoint de listagem em src/api/users.rs"),
+        );
+
+        let claude = ClaudeCodeAdapter;
+        let mut codex = CodexAdapter::new();
+        let mut estado = Estado::new();
+        estado.processar(&p, &claude, &mut codex, true);
+
+        let linhas = estado.montar_resumo();
+        assert_eq!(linhas.len(), 1);
+        assert!(linhas[0].contains("nota media:"), "linha sem nota media: {}", linhas[0]);
+    }
+
+    #[test]
+    fn resumo_sem_prompt_pontuado_nao_mostra_nota_media_nem_divide_por_zero() {
+        // Provider com movimento (linhas lidas) mas nenhum prompt pontuado
+        // ainda: o guard `n > 0` tem que barrar a divisão, não só evitar o
+        // panic.
+        let mut estado = Estado::new();
+        estado.contadores.entry(Provider::ClaudeCode).or_default().linhas += 1;
+
+        let linhas = estado.montar_resumo();
+        assert_eq!(linhas.len(), 1);
+        assert!(
+            !linhas[0].contains("nota media"),
+            "nao deveria haver nota media sem prompt pontuado: {}",
+            linhas[0]
+        );
     }
 
     #[test]
