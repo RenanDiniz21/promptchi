@@ -210,6 +210,41 @@ mod tests {
         }
     }
 
+    // ACHADO 3: nenhum teste exercitava `palavras > 40 && conteudo == 0`
+    // diretamente — a suíte inteira passava mesmo com o bloco removido.
+    // Constrói Sinais acima e abaixo do limiar, sem âncora e sem restrição
+    // (conteudo == 0), e prova a penalização de 30 pontos.
+    #[test]
+    fn concisao_penaliza_verbosidade_sem_conteudo() {
+        let acima_do_limiar = Sinais {
+            palavras: 41,
+            ancoras: 0,
+            restricoes: 0,
+            formato_pedido: false,
+            deiticos: 0,
+            ruido: 0,
+        };
+        let no_limiar = Sinais {
+            palavras: 40,
+            ancoras: 0,
+            restricoes: 0,
+            formato_pedido: false,
+            deiticos: 0,
+            ruido: 0,
+        };
+
+        assert_eq!(
+            concisao(&acima_do_limiar),
+            70,
+            "mais de 40 palavras sem ancora nem restricao deveria perder 30 pontos"
+        );
+        assert_eq!(
+            concisao(&no_limiar),
+            100,
+            "exatamente no limiar de 40 palavras nao deveria penalizar"
+        );
+    }
+
     #[test]
     fn sinais_com_valores_extremos_nao_causa_panic() {
         let s = Sinais {

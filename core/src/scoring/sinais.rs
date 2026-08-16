@@ -51,7 +51,11 @@ fn tem_fronteira_palavra(texto: &str, frase: &str) -> bool {
             return true;
         }
 
-        pos = start + 1;
+        // Avança pelo tamanho em bytes do primeiro caractere de fato casado,
+        // não um literal 1: se a frase casada começar com caractere
+        // multibyte (á, é, ã, ç), pos+1 cai no meio do caractere e
+        // baixo[pos..] na próxima volta panica por fronteira UTF-8 inválida.
+        pos = start + baixo[start..].chars().next().map_or(1, |c| c.len_utf8());
     }
 
     false
@@ -93,15 +97,33 @@ fn e_ancora(palavra: &str) -> bool {
         return true;
     }
 
-    // Mantém a checagem de caminho na palavra original para não perder separadores
+    // Barra só conta como âncora se parecer caminho de verdade. Extensão
+    // conhecida já foi checada acima; aqui basta um segmento com 3+
+    // caracteres que não seja puramente numérico. Sem isso, data (24/08) e
+    // conjunção (e/ou, ele/ela) — comuns em português — viravam âncora falsa.
     if palavra.contains('/') || palavra.contains('\\') {
-        return true;
+        let parece_caminho = palavra.split(|c| c == '/' || c == '\\').any(|seg| {
+            let seg = seg.trim_matches(|c: char| !c.is_alphanumeric());
+            seg.len() >= 3 && !seg.chars().all(|c| c.is_ascii_digit())
+        });
+        if parece_caminho {
+            return true;
+        }
     }
 
-    // camelCase / PascalCase: tem minúscula e uma maiúscula depois da primeira posição.
-    let tem_minuscula = palavra.chars().any(|c| c.is_lowercase());
-    let maiuscula_interna = palavra.chars().skip(1).any(|c| c.is_uppercase());
-    palavra.len() > 3 && tem_minuscula && maiuscula_interna
+    // camelCase / PascalCase, checado por segmento separado por ponto: duas
+    // frases coladas por ponto sem espaço ("bug.Depois") não podem casar
+    // como se fossem um identificador só. Cada segmento precisa ter
+    // minúscula e maiúscula interna por conta própria.
+    limpo.split('.').any(e_camel_case)
+}
+
+/// Segmento com minúscula e uma maiúscula depois da primeira posição —
+/// ex.: "parseLine". "Depois" (maiúscula só na posição 0) não conta.
+fn e_camel_case(segmento: &str) -> bool {
+    let tem_minuscula = segmento.chars().any(|c| c.is_lowercase());
+    let maiuscula_interna = segmento.chars().skip(1).any(|c| c.is_uppercase());
+    segmento.len() > 3 && tem_minuscula && maiuscula_interna
 }
 
 #[cfg(test)]
@@ -209,5 +231,56 @@ mod tests {
     #[test]
     fn falso_positivo_barrado_com_acentuacao() {
         assert_eq!(extrair("nós mantenhamos os testes").restricoes, 0);
+    }
+
+    // ACHADO 1: ponto sem espaço colava duas frases num token só, e o
+    // pedaço depois do ponto (com maiúscula na primeira posição) passava
+    // como camelCase.
+    #[test]
+    fn ponto_sem_espaco_nao_produz_ancora_falsa() {
+        assert_eq!(extrair("Corrige o bug.Depois roda os testes").ancoras, 0);
+    }
+
+    #[test]
+    fn camelcase_de_verdade_continua_ancora() {
+        assert_eq!(extrair("o metodo parseLine falhou").ancoras, 1);
+    }
+
+    // ACHADO 2: barra fora de caminho (data, conjunção) virava âncora falsa.
+    #[test]
+    fn data_com_barra_nao_e_ancora() {
+        assert_eq!(extrair("faz o deploy hoje 24/08").ancoras, 0);
+    }
+
+    #[test]
+    fn conjuncao_com_barra_nao_e_ancora() {
+        assert_eq!(extrair("usa e/ou conforme o caso").ancoras, 0);
+    }
+
+    #[test]
+    fn caminho_com_extensao_continua_ancora() {
+        assert_eq!(extrair("corrige src/main.rs").ancoras, 1);
+    }
+
+    #[test]
+    fn diretorio_com_segmento_longo_e_ancora() {
+        assert_eq!(extrair("move UserService para services/").ancoras, 2);
+    }
+
+    #[test]
+    fn caminho_multi_segmento_com_extensao_e_ancora() {
+        assert_eq!(extrair("volta o que voce fez em core/src/lib.rs").ancoras, 1);
+    }
+
+    // ACHADO 4: avançar por 1 byte literal, em vez do tamanho do caractere
+    // casado, quebra fronteira UTF-8 quando a frase casada começa com
+    // caractere multibyte que fica dentro de outra palavra (não é fronteira
+    // válida, então o laço precisa avançar e tentar de novo). "café" contém
+    // "é" colado a "f" (não é fronteira de palavra), forçando o laço a
+    // avançar além do match; com pos = start + 1 isso caía no meio do "é"
+    // (2 bytes em UTF-8) e baixo[pos..] entrava em pânico.
+    #[test]
+    fn fronteira_palavra_nao_panica_avancando_apos_char_multibyte() {
+        assert!(!tem_fronteira_palavra("café com açúcar", "é"));
     }
 }
