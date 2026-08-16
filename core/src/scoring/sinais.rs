@@ -35,10 +35,6 @@ pub struct Sinais {
 
 /// Verifica se uma frase está cercada por fronteira de palavra (não-alfanumérico ou fim/início).
 fn tem_fronteira_palavra(texto: &str, frase: &str) -> bool {
-    if !texto.contains(frase) {
-        return false;
-    }
-
     let baixo = texto.to_lowercase();
     let frase_lower = frase.to_lowercase();
     let mut pos = 0;
@@ -47,8 +43,9 @@ fn tem_fronteira_palavra(texto: &str, frase: &str) -> bool {
         let start = pos + idx;
         let end = start + frase_lower.len();
 
-        let antes_ok = start == 0 || !texto.chars().nth(start - 1).map_or(false, |c| c.is_alphanumeric());
-        let depois_ok = end >= texto.len() || !texto.chars().nth(end).map_or(false, |c| c.is_alphanumeric());
+        // Verifica fronteira usando fatias de bytes, respeitando UTF-8
+        let antes_ok = baixo[..start].chars().next_back().map_or(true, |c| !c.is_alphanumeric());
+        let depois_ok = baixo[end..].chars().next().map_or(true, |c| !c.is_alphanumeric());
 
         if antes_ok && depois_ok {
             return true;
@@ -187,5 +184,30 @@ mod tests {
         assert_eq!(s.formato_pedido, false);
         assert_eq!(s.deiticos, 0);
         assert_eq!(s.ruido, 0);
+    }
+
+    #[test]
+    fn restricao_com_acentuacao_antes() {
+        assert_eq!(extrair("não fiz sem querer").restricoes, 1);
+    }
+
+    #[test]
+    fn ruido_com_acentuacao_antes() {
+        assert_eq!(extrair("é isso, valeu").ruido, 1);
+    }
+
+    #[test]
+    fn ruido_capitalizado() {
+        assert_eq!(extrair("Por favor, ajuda com isso").ruido, 1);
+    }
+
+    #[test]
+    fn restricao_capitalizada() {
+        assert_eq!(extrair("Mantenha a assinatura atual").restricoes, 1);
+    }
+
+    #[test]
+    fn falso_positivo_barrado_com_acentuacao() {
+        assert_eq!(extrair("nós mantenhamos os testes").restricoes, 0);
     }
 }
