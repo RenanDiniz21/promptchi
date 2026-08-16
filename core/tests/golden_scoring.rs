@@ -57,22 +57,34 @@ fn todas_carregam_a_versao_corrente() {
     }
 }
 
-/// Assinatura agregada do comportamento. Qualquer mudança de nota em
-/// qualquer caso altera esta soma; se isso for intencional, bump
-/// `VERSAO_ENGINE` e atualize o valor abaixo NA MESMA mudança.
+/// Snapshot nota a nota do comportamento. Qualquer mudança de nota em
+/// qualquer caso vai aparecer aqui; se isso for intencional, bump
+/// `VERSAO_ENGINE` e atualize o array abaixo NA MESMA mudança.
+/// A ordem segue exatamente CASOS[0..23].
 #[test]
-fn assinatura_agregada_congelada() {
-    let soma: u32 = CASOS.iter().map(|(t, n, _)| pontuar(t, &ctx(*n)).valor as u32).sum();
+fn valores_congelados() {
     assert_eq!(
         VERSAO_ENGINE, 1,
-        "engine mudou de versao: atualize a soma esperada abaixo junto"
+        "engine mudou de versao: atualize o array de valores esperados abaixo junto"
     );
-    // Rode uma vez, veja o valor real na falha, e fixe aqui.
-    assert_eq!(soma, SOMA_ESPERADA_V1, "score mudou sem bump de VERSAO_ENGINE");
+    for (i, (texto, anteriores, _)) in CASOS.iter().enumerate() {
+        let obtido = pontuar(texto, &ctx(*anteriores)).valor;
+        assert_eq!(
+            obtido, VALORES_ESPERADOS_V1[i],
+            "caso {} ({:?}): valor divergiu (esperado {}, obtido {})",
+            i,
+            texto,
+            VALORES_ESPERADOS_V1[i],
+            obtido
+        );
+    }
 }
 
-/// Preenchido na primeira execução (Step 2 do plano).
-const SOMA_ESPERADA_V1: u32 = 1529;
+/// Preenchido na primeira execução. Array com os 24 valores, na ordem de CASOS.
+/// Deve somar exatamente 1529 como verificação de integridade.
+const VALORES_ESPERADOS_V1: [u8; 24] = [
+    38, 66, 32, 38, 70, 70, 70, 70, 70, 75, 75, 88, 65, 53, 83, 57, 46, 72, 57, 60, 72, 45, 87, 70,
+];
 
 /// Invariantes que precisam valer em qualquer versão da engine.
 #[test]
